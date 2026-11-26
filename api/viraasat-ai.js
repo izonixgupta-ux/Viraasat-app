@@ -15,6 +15,54 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite']
+      .filter((v, i, a) => a.indexOf(v) === i);
+
+    // MODE 1: Smart Auto-Detect Voice Transcription (Haryanvi, Punjabi, Urdu, Hindi, English -> Clean Roman/English)
+    if (body.action === 'transcribe' && body.audioBase64) {
+      const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
+      const transcribePrompt = `Listen carefully to the user's voice audio and transcribe EXACTLY what they said.
+STRICT LANGUAGE & SCRIPT RULES:
+1. Auto-detect the spoken language/dialect: English, Haryanvi, Punjabi, Urdu, or Hindi/Hinglish.
+2. If the user speaks English, write clean natural English.
+3. If the user speaks Haryanvi, Punjabi, Urdu, Hindi, or Hinglish, write ONLY in clean Romanized script (Latin A-Z letters) preserving their exact dialect words and tone (e.g. Haryanvi: "bhai ke haal sai, ek shaadi ka card bana de"; Punjabi: "veere kiddan, ik card bana de"; Urdu: "assalam-o-alaikum, ek card bana dein"; Hinglish: "bhai ek wedding card bana de").
+4. NEVER output Devanagari, Gurmukhi, or Arabic/Urdu script. ONLY Latin/Roman letters.
+5. Return ONLY the transcribed text — no quotes, no labels, no explanations.`;
+
+      let transcript = '';
+      let lastErr = 'Transcription failed';
+      for (const model of modelsToTry) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const genCfg = { temperature: 0.1, maxOutputTokens: 300 };
+        if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              role: 'user',
+              parts: [
+                { text: transcribePrompt },
+                { inlineData: { mimeType, data: body.audioBase64 } }
+              ]
+            }],
+            generationConfig: genCfg
+          })
+        });
+        const json = await resp.json().catch(() => ({}));
+        const out = json && json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text;
+        if (resp.ok && out && out.trim()) {
+          transcript = out.trim().replace(/^["']|["']$/g, '');
+          break;
+        }
+        lastErr = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
+      }
+      if (!transcript) return res.status(502).json({ error: 'Voice AI Error: ' + lastErr });
+      return res.status(200).json({ transcript });
+    }
+
+    // MODE 2: Full-App Automation & Support Chat
     const userMessages = Array.isArray(body.messages) ? body.messages.slice(-10) : [];
     const ctx = body.context || {};
 
@@ -24,7 +72,7 @@ App Live State Snapshot: ${JSON.stringify(ctx)}.
 
 Your dual role:
 1. FULL AUTOMATION: Whenever the user asks you to create, design, lock, add, post, switch, or update anything in Viraasat (cards, time capsules, family members, events, broadcasts, lounge messages, voice stories, MCX alerts, theme/language/navigation), ALWAYS call the matching tool(s) immediately with clean, complete parameters. You can call multiple tools in one turn if needed.
-2. 24x7 HELPFUL SUPPORT: If the user asks how something works or needs guidance, answer clearly, warmly, and concisely in the SAME language/script the user wrote in (Hinglish, Haryanvi Roman, Hindi, Punjabi, or English). Never be preachy.
+2. LANGUAGE MIRRORING: Reply warmly, naturally, and concisely in the EXACT same language/dialect and script the user used (Roman Haryanvi -> Roman Haryanvi, Roman Punjabi -> Roman Punjabi, Roman Urdu -> Roman Urdu, Hinglish -> Hinglish, English -> English). Never switch to Shuddh Hindi Devanagari unless the user explicitly writes in Devanagari. Never be preachy.
 3. SMART DEFAULTS: For wedding/birthday cards or time capsules, fill in tasteful, realistic Indian family details for any fields the user didn't specify so the result looks instantly polished.
 4. MARKETS: Use the live MCX Gold/Silver prices from the App Live State Snapshot above when answering rate questions.`;
 
@@ -214,10 +262,6 @@ Your dual role:
       contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
     }
 
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite']
-      .filter((v, i, a) => a.indexOf(v) === i);
-
     let aiData = null;
     let lastError = 'Gemini request failed';
 
@@ -271,5 +315,5 @@ Your dual role:
   } catch (err) {
     return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
   }
-                                                               }
+          }
           
