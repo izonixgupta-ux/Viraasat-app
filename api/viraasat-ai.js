@@ -1,4 +1,4 @@
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -19,14 +19,14 @@ export default async function handler(req, res) {
     const modelsToTry = [preferredModel, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash']
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    // MODE 1: Smart Auto-Detect Voice Transcription (Haryanvi, Punjabi, Urdu, Hindi, English -> Clean Roman/English)
+    // MODE 1: Smart Auto-Detect Voice Transcription
     if (body.action === 'transcribe' && body.audioBase64) {
       const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
       const transcribePrompt = `Listen carefully to the user's voice audio and transcribe EXACTLY what they said.
 STRICT LANGUAGE & SCRIPT RULES:
 1. Auto-detect the spoken language/dialect: English, Haryanvi, Punjabi, Urdu, or Hindi/Hinglish.
 2. If the user speaks English, write clean natural English.
-3. If the user speaks Haryanvi, Punjabi, Urdu, Hindi, or Hinglish, write ONLY in clean Romanized script (Latin A-Z letters) preserving their exact dialect words and tone (e.g. Haryanvi: "bhai ke haal sai, ek shaadi ka card bana de"; Punjabi: "veere kiddan, ik card bana de"; Urdu: "assalam-o-alaikum, ek card bana dein"; Hinglish: "bhai ek wedding card bana de").
+3. If the user speaks Haryanvi, Punjabi, Urdu, Hindi, or Hinglish, write ONLY in clean Romanized script (Latin A-Z letters) preserving their exact dialect words and tone.
 4. NEVER output Devanagari, Gurmukhi, or Arabic/Urdu script. ONLY Latin/Roman letters.
 5. Return ONLY the transcribed text — no quotes, no labels, no explanations.`;
 
@@ -34,7 +34,6 @@ STRICT LANGUAGE & SCRIPT RULES:
       let lastErr = 'Transcription failed';
       for (const model of modelsToTry) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-        const genCfg = { temperature: 0.1, maxOutputTokens: 300 };
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -46,7 +45,7 @@ STRICT LANGUAGE & SCRIPT RULES:
                 { inlineData: { mimeType, data: body.audioBase64 } }
               ]
             }],
-            generationConfig: genCfg
+            generationConfig: { temperature: 0.1, maxOutputTokens: 300 }
           })
         });
         const json = await resp.json().catch(() => ({}));
@@ -228,5 +227,91 @@ Your dual role:
         name: 'update_app_settings',
         description: 'Change app appearance, dark/light mode, accent color, glass UI level, or app language.',
         parameters: {
-          type: '
-            
+          type: 'object',
+          properties: {
+            dark: { type: 'boolean' },
+            accentTheme: { type: 'string', enum: ['gold', 'emerald', 'rose', 'sapphire', 'amethyst', 'titanium'] },
+            appLang: { type: 'string', enum: ['en', 'hi', 'har', 'pa'] },
+            glassLevel: { type: 'string', enum: ['standard', 'pro', 'liquid'] }
+          }
+        }
+      },
+      {
+        name: 'navigate_app',
+        description: 'Navigate to any tab or modal in Viraasat.',
+        parameters: {
+          type: 'object',
+          properties: {
+            destination: { type: 'string', enum: ['tree', 'capsules', 'voice', 'chat', 'events', 'cards', 'markets', 'settings', 'backup', 'language', 'alerts'] }
+          },
+          required: ['destination']
+        }
+      }
+    ];
+
+    const contents = userMessages
+      .filter(m => m && m.content)
+      .map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: String(m.content) }]
+      }));
+
+    if (!contents.length) {
+      contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
+    }
+
+    let aiData = null;
+    let lastError = 'Gemini request failed';
+
+    for (const model of modelsToTry) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents,
+          tools: [{ functionDeclarations }],
+          generationConfig: {
+            temperature: 0.35,
+            maxOutputTokens: 650
+          }
+        })
+      });
+
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json.candidates && json.candidates[0]) {
+        aiData = json;
+        break;
+      }
+      lastError = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
+    }
+
+    if (!aiData) {
+      return res.status(502).json({ error: 'Gemini Error: ' + lastError });
+    }
+
+    const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
+    const actions = [];
+    const replyTexts = [];
+
+    for (const part of parts) {
+      if (part.functionCall && part.functionCall.name) {
+        actions.push({ name: part.functionCall.name, args: part.functionCall.args || {} });
+      }
+      if (part.text) {
+        replyTexts.push(part.text);
+      }
+    }
+
+    let reply = replyTexts.join('\n').trim();
+    if (!reply && actions.length) {
+      reply = 'Done! Maine aapke command ke according sab update kar diya hai. Neeche live preview dekh sakte hain.';
+    }
+
+    return res.status(200).json({ reply, actions });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
+  }
+};
+        
