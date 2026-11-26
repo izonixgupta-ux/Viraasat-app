@@ -15,8 +15,8 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite']
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
+    const modelsToTry = [preferredModel, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash']
       .filter((v, i, a) => a.indexOf(v) === i);
 
     // MODE 1: Smart Auto-Detect Voice Transcription (Haryanvi, Punjabi, Urdu, Hindi, English -> Clean Roman/English)
@@ -35,7 +35,6 @@ STRICT LANGUAGE & SCRIPT RULES:
       for (const model of modelsToTry) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
         const genCfg = { temperature: 0.1, maxOutputTokens: 300 };
-        if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -229,91 +228,5 @@ Your dual role:
         name: 'update_app_settings',
         description: 'Change app appearance, dark/light mode, accent color, glass UI level, or app language.',
         parameters: {
-          type: 'object',
-          properties: {
-            dark: { type: 'boolean' },
-            accentTheme: { type: 'string', enum: ['gold', 'emerald', 'rose', 'sapphire', 'amethyst', 'titanium'] },
-            appLang: { type: 'string', enum: ['en', 'hi', 'har', 'pa'] },
-            glassLevel: { type: 'string', enum: ['standard', 'pro', 'liquid'] }
-          }
-        }
-      },
-      {
-        name: 'navigate_app',
-        description: 'Navigate to any tab or modal in Viraasat.',
-        parameters: {
-          type: 'object',
-          properties: {
-            destination: { type: 'string', enum: ['tree', 'capsules', 'voice', 'chat', 'events', 'cards', 'markets', 'settings', 'backup', 'language', 'alerts'] }
-          },
-          required: ['destination']
-        }
-      }
-    ];
-
-    const contents = userMessages
-      .filter(m => m && m.content)
-      .map(m => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: String(m.content) }]
-      }));
-
-    if (!contents.length) {
-      contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
-    }
-
-    let aiData = null;
-    let lastError = 'Gemini request failed';
-
-    for (const model of modelsToTry) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          tools: [{ functionDeclarations }],
-          generationConfig: {
-            temperature: 0.35,
-            maxOutputTokens: 650
-          }
-        })
-      });
-
-      const json = await resp.json().catch(() => ({}));
-      if (resp.ok && json.candidates && json.candidates[0]) {
-        aiData = json;
-        break;
-      }
-      lastError = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
-    }
-
-    if (!aiData) {
-      return res.status(502).json({ error: 'Gemini Error: ' + lastError });
-    }
-
-    const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
-    const actions = [];
-    const replyTexts = [];
-
-    for (const part of parts) {
-      if (part.functionCall && part.functionCall.name) {
-        actions.push({ name: part.functionCall.name, args: part.functionCall.args || {} });
-      }
-      if (part.text) {
-        replyTexts.push(part.text);
-      }
-    }
-
-    let reply = replyTexts.join('\n').trim();
-    if (!reply && actions.length) {
-      reply = 'Done! Maine aapke command ke according sab update kar diya hai. Neeche live preview dekh sakte hain.';
-    }
-
-    return res.status(200).json({ reply, actions });
-  } catch (err) {
-    return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
-  }
-          }
-          
+          type: '
+            
