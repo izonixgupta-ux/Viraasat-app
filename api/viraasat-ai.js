@@ -15,8 +15,8 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-2.5-flash']
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-3.8-flash']
       .filter((v, i, a) => a.indexOf(v) === i);
 
     // MODE 1: Smart Auto-Detect Voice Transcription
@@ -261,5 +261,67 @@ Your dual role:
       }));
 
     if (!contents.length) {
-      contents
-          
+      contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
+    }
+
+    let aiData = null;
+    let lastError = 'Gemini request failed';
+
+    for (const model of modelsToTry) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8500);
+      const genConfig = { temperature: 0.35, maxOutputTokens: 450 };
+      if (model.includes('2.5')) genConfig.thinkingConfig = { thinkingBudget: 0 };
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            tools: [{ functionDeclarations }],
+            generationConfig: genConfig
+          })
+        });
+        clearTimeout(timer);
+        const json = await resp.json().catch(() => ({}));
+        if (resp.ok && json.candidates && json.candidates[0]) {
+          aiData = json;
+          break;
+        }
+        lastError = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
+      } catch (e) {
+        clearTimeout(timer);
+        lastError = e && e.name === 'AbortError' ? 'AI response timeout' : (e && e.message ? e.message : 'Network error');
+      }
+    }
+
+    if (!aiData) {
+      return res.status(502).json({ error: 'Gemini Error: ' + lastError });
+    }
+
+    const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
+    const actions = [];
+    const replyTexts = [];
+
+    for (const part of parts) {
+      if (part.functionCall && part.functionCall.name) {
+        actions.push({ name: part.functionCall.name, args: part.functionCall.args || {} });
+      }
+      if (part.text) {
+        replyTexts.push(part.text);
+      }
+    }
+
+    let reply = replyTexts.join('\n').trim();
+    if (!reply && actions.length) {
+      reply = 'Done! Maine aapke command ke according sab update kar diya hai. Neeche live preview dekh sakte hain.';
+    }
+
+    return res.status(200).json({ reply, actions });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
+  }
+                    }
