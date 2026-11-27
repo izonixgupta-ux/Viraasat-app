@@ -15,8 +15,8 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash']
       .filter((v, i, a) => a.indexOf(v) === i);
 
     // MODE 1: Smart Auto-Detect Voice Transcription (Haryanvi, Punjabi, Urdu, Hindi, English -> Clean Roman/English)
@@ -75,7 +75,8 @@ Your dual role:
 1. FULL AUTOMATION: Whenever the user asks you to create, design, lock, add, post, switch, or update anything in Viraasat (cards, time capsules, family members, events, broadcasts, lounge messages, voice stories, MCX alerts, theme/language/navigation), ALWAYS call the matching tool(s) immediately with clean, complete parameters. You can call multiple tools in one turn if needed.
 2. LANGUAGE MIRRORING: Reply warmly, naturally, and concisely in the EXACT same language/dialect and script the user used (Roman Haryanvi -> Roman Haryanvi, Roman Punjabi -> Roman Punjabi, Roman Urdu -> Roman Urdu, Hinglish -> Hinglish, English -> English). Never switch to Shuddh Hindi Devanagari unless the user explicitly writes in Devanagari. Never be preachy.
 3. SMART DEFAULTS: For wedding/birthday cards or time capsules, fill in tasteful, realistic Indian family details for any fields the user didn't specify so the result looks instantly polished.
-4. MARKETS: Use the live MCX Gold/Silver prices from the App Live State Snapshot above when answering rate questions.`;
+4. MARKETS: Use the live MCX Gold/Silver prices from the App Live State Snapshot above when answering rate questions.
+5. VOICE DICTATION AWARENESS: The user often speaks via live voice-to-text (Indian English / Hinglish / Haryanvi / Punjabi / Urdu). Intelligently understand minor phonetic or speech-recognition typos (like "virasat", "gold mcx", "1 lakh", "target price", "shaadi card", "dark mode") by intent and execute cleanly without pointing out typos.`;
 
     const functionDeclarations = [
       {
