@@ -6,13 +6,15 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = (process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
     return res.status(200).json({
-      reply: 'Vercel Environment Variables me GEMINI_API_KEY set nahi hai. Please add karke redeploy karein.',
+      reply: 'Vercel Environment Variables me API key set nahi hai. Please GEMINI_API_KEY (ya OPENROUTER_API_KEY) add karke redeploy karein.',
       actions: []
     });
   }
+
+  const isOpenRouter = apiKey.startsWith('sk-or-');
 
   let body = {};
   let userMessages = [];
@@ -23,21 +25,19 @@ module.exports = async function handler(req, res) {
     userMessages = Array.isArray(body.messages) ? body.messages.slice(-8) : [];
     ctx = body.context || {};
 
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-2.5-flash']
-      .filter((v, i, a) => v && a.indexOf(v) === i);
-
     // MODE 1: Voice Transcription
     if (body.action === 'transcribe' && body.audioBase64) {
+      if (isOpenRouter) {
+        return res.status(200).json({ transcript: '' });
+      }
       const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
       const transcribePrompt = 'Transcribe this Indian English / Hinglish / Haryanvi / Punjabi / Urdu audio accurately in Roman script (Latin A-Z only). Return ONLY the transcribed text.';
+      const gModels = ['gemini-3.8-flash', 'gemini-2.5-flash'];
       let transcript = '';
-      for (const model of modelsToTry) {
+      for (const model of gModels) {
         const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 9000);
-        const genCfg = { temperature: 0.05, maxOutputTokens: 250 };
-        if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
+        const timer = setTimeout(() => ctrl.abort(), 7000);
         try {
           const resp = await fetch(url, {
             method: 'POST',
@@ -45,7 +45,7 @@ module.exports = async function handler(req, res) {
             signal: ctrl.signal,
             body: JSON.stringify({
               contents: [{ role: 'user', parts: [{ text: transcribePrompt }, { inlineData: { mimeType, data: body.audioBase64 } }] }],
-              generationConfig: genCfg
+              generationConfig: { temperature: 0.05, maxOutputTokens: 250 }
             })
           });
           clearTimeout(timer);
@@ -253,6 +253,97 @@ module.exports = async function handler(req, res) {
       }
     ];
 
+    // =========================================================================
+    // PROVIDER A: OPENROUTER (sk-or-v1-...)
+    // =========================================================================
+    if (isOpenRouter) {
+      const customModel = (process.env.OPENROUTER_MODEL || process.env.GEMINI_MODEL || '').trim();
+      const orModels = [
+        customModel,
+        'google/gemini-2.5-flash',
+        'google/gemini-2.0-flash-exp:free',
+        'meta-llama/llama-3.3-70b-instruct:free',
+        'openrouter/free'
+      ].filter((v, i, a) => v && v.includes('/') && a.indexOf(v) === i);
+
+      const messages = [{ role: 'system', content: systemPrompt }];
+      for (const m of userMessages) {
+        if (m && m.content) {
+          messages.push({
+            role: m.role === 'assistant' ? 'assistant' : 'user',
+            content: String(m.content)
+          });
+        }
+      }
+      if (messages.length === 1) messages.push({ role: 'user', content: 'Hi' });
+
+      const tools = functionDeclarations.map(fn => ({
+        type: 'function',
+        function: { name: fn.name, description: fn.description, parameters: fn.parameters }
+      }));
+
+      let lastErr = 'OpenRouter busy';
+      for (const model of orModels) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 7500);
+        try {
+          const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + apiKey,
+              'HTTP-Referer': 'https://viraasat.vercel.app',
+              'X-Title': 'Viraasat AI'
+            },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              model,
+              messages,
+              tools,
+              tool_choice: 'auto',
+              temperature: 0.35,
+              max_tokens: 450
+            })
+          });
+          clearTimeout(timer);
+          const json = await resp.json().catch(() => ({}));
+          if (resp.ok && json.choices && json.choices[0] && json.choices[0].message) {
+            const msg = json.choices[0].message;
+            const actions = [];
+            if (Array.isArray(msg.tool_calls)) {
+              for (const tc of msg.tool_calls) {
+                if (tc && tc.function && tc.function.name) {
+                  let args = {};
+                  try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+                  actions.push({ name: tc.function.name, args });
+                }
+              }
+            }
+            let reply = String(msg.content || '').trim();
+            if (!reply && actions.length) {
+              reply = 'Done! Maine aapke liye exact screen khol di hai aur settings update kar di hain.';
+            }
+            return res.status(200).json({ reply: reply || 'Ho gaya!', actions });
+          }
+          lastErr = (json && json.error && json.error.message) ? json.error.message : ('HTTP ' + resp.status);
+        } catch (e) {
+          clearTimeout(timer);
+          lastErr = e && e.name === 'AbortError' ? 'Timeout' : (e && e.message ? e.message : 'Network error');
+        }
+      }
+      return res.status(200).json({
+        reply: 'AI abhi thoda busy hai (' + lastErr + '). Ek second baad dobara bhejo.',
+        actions: []
+      });
+    }
+
+    // =========================================================================
+    // PROVIDER B: DIRECT GOOGLE GEMINI (AIza...)
+    // =========================================================================
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-2.5-flash']
+      .filter((v, i, a) => v && !v.includes('/') && a.indexOf(v) === i);
+
     const contents = userMessages
       .filter(m => m && m.content)
       .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }] }));
@@ -264,7 +355,7 @@ module.exports = async function handler(req, res) {
     for (const model of modelsToTry) {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 9000);
+      const timer = setTimeout(() => ctrl.abort(), 8500);
       const genConfig = { temperature: 0.35, maxOutputTokens: 450 };
       if (model.includes('2.5')) genConfig.thinkingConfig = { thinkingBudget: 0 };
       try {
@@ -323,4 +414,4 @@ module.exports = async function handler(req, res) {
     });
   }
 };
-            
+      
