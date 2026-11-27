@@ -15,25 +15,28 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
-    const modelsToTry = [preferredModel, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash']
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
+    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
       .filter((v, i, a) => a.indexOf(v) === i);
 
-    // MODE 1: Smart Auto-Detect Voice Transcription
+    // MODE 1: Smart Auto-Detect Voice Transcription (Haryanvi, Punjabi, Urdu, Hindi, English -> Clean Roman/English)
     if (body.action === 'transcribe' && body.audioBase64) {
       const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
-      const transcribePrompt = `Listen carefully to the user's voice audio and transcribe EXACTLY what they said.
-STRICT LANGUAGE & SCRIPT RULES:
-1. Auto-detect the spoken language/dialect: English, Haryanvi, Punjabi, Urdu, or Hindi/Hinglish.
-2. If the user speaks English, write clean natural English.
-3. If the user speaks Haryanvi, Punjabi, Urdu, Hindi, or Hinglish, write ONLY in clean Romanized script (Latin A-Z letters) preserving their exact dialect words and tone.
-4. NEVER output Devanagari, Gurmukhi, or Arabic/Urdu script. ONLY Latin/Roman letters.
-5. Return ONLY the transcribed text — no quotes, no labels, no explanations.`;
+      const transcribePrompt = `You are a studio-grade South Asian & Indian English speech transcriber for the Viraasat app.
+Listen carefully to the audio and transcribe EXACTLY what the speaker said with 100% accurate spelling.
+RULES:
+1. Auto-detect English, Hinglish, Hindi, Haryanvi, Punjabi, or Urdu seamlessly — even if the speaker mixes languages in one sentence.
+2. Preserve exact app terms, names, and numbers accurately (e.g. "Viraasat", "Gold MCX", "Silver", "1 lakh 20 thousand", "100000", "dark mode", "time capsule", "wedding card", "Ex-GST", "Retail").
+3. Output clean natural English if spoken in English, or clean Romanized script (Latin A-Z letters) if spoken in Hindi/Hinglish/Haryanvi/Punjabi/Urdu. NEVER output Devanagari, Gurmukhi, or Arabic script.
+4. Fix stutters cleanly without changing the speaker's intent.
+5. Return ONLY the final transcribed text — no quotes, no prefixes, no commentary.`;
 
       let transcript = '';
       let lastErr = 'Transcription failed';
       for (const model of modelsToTry) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const genCfg = { temperature: 0.05, maxOutputTokens: 300 };
+        if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -45,7 +48,7 @@ STRICT LANGUAGE & SCRIPT RULES:
                 { inlineData: { mimeType, data: body.audioBase64 } }
               ]
             }],
-            generationConfig: { temperature: 0.1, maxOutputTokens: 300 }
+            generationConfig: genCfg
           })
         });
         const json = await resp.json().catch(() => ({}));
@@ -313,5 +316,4 @@ Your dual role:
   } catch (err) {
     return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
   }
-};
-        
+            }
