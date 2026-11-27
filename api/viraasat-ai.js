@@ -14,51 +14,6 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  function buildInstantFallback(lastText, ctx) {
-    const q = String(lastText || '').toLowerCase().trim();
-    const m = (ctx && ctx.markets) || {};
-
-    if (/^(hi|hello|hey|namaste|hlo|yo|sup|helo)\b/.test(q) || q.includes('kaise ho') || q.includes('viraasat')) {
-      return {
-        reply: 'Namaste! Main Viraasat AI hoon — bilkul ready hoon. Bolo kya karna hai: wedding/birthday card design, time capsule lock, profile picture change, ya live gold rate check?',
-        actions: []
-      };
-    }
-    if (q.includes('feature') || q.includes('kya kar') || q.includes('kya kya')) {
-      return {
-        reply: 'Viraasat ke main features:\n• Living Family Tree & Photo Wall\n• 3D E-Invite Card Studio\n• Time Capsules\n• Voice & Story Vault\n• Family Lounge & Calls\n• Live MCX Gold/Silver Rates',
-        actions: []
-      };
-    }
-    if (q.includes('profile') || q.includes('dp') || q.includes('avatar') || q.includes('photo')) {
-      return {
-        reply: 'Maine aapka Profile Editor khol diya hai — Upload Photo par tap karke apni photo crop aur save kar lo.',
-        actions: [{ name: 'edit_member_profile', args: {} }]
-      };
-    }
-    if (q.includes('gold') || q.includes('silver') || q.includes('rate') || q.includes('bhav') || q.includes('mcx')) {
-      const g24 = m.gold24_10g_inr ? 'Rs ' + Number(m.gold24_10g_inr).toLocaleString('en-IN') + '/10g' : 'Live';
-      const sil = m.silver_1kg_inr ? 'Rs ' + Number(m.silver_1kg_inr).toLocaleString('en-IN') + '/kg' : 'Live';
-      return {
-        reply: 'Abhi Gold 24K ' + g24 + ' aur Silver ' + sil + ' chal raha hai. Maine Markets tab khol diya hai.',
-        actions: [{ name: 'manage_markets', args: { refresh: true } }]
-      };
-    }
-    if (q.includes('dark mode')) {
-      return { reply: 'Dark Mode on kar diya hai!', actions: [{ name: 'update_app_settings', args: { dark: true } }] };
-    }
-    if (q.includes('light mode')) {
-      return { reply: 'Light Mode on kar diya hai!', actions: [{ name: 'update_app_settings', args: { dark: false } }] };
-    }
-    if (q.includes('setting')) {
-      return { reply: 'Settings open kar di hain!', actions: [{ name: 'navigate_app', args: { destination: 'settings' } }] };
-    }
-    return {
-      reply: 'Main ready hoon! Short command bolo — jaise "Wedding card banao", "Profile photo change", ya "Live gold rate".',
-      actions: []
-    };
-  }
-
   let body = {};
   let userMessages = [];
   let ctx = {};
@@ -70,8 +25,7 @@ module.exports = async function handler(req, res) {
 
     const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
     const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-2.5-flash']
-      .filter((v, i, a) => v && a.indexOf(v) === i)
-      .slice(0, 2);
+      .filter((v, i, a) => v && a.indexOf(v) === i);
 
     // MODE 1: Voice Transcription
     if (body.action === 'transcribe' && body.audioBase64) {
@@ -81,7 +35,7 @@ module.exports = async function handler(req, res) {
       for (const model of modelsToTry) {
         const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3800);
+        const timer = setTimeout(() => ctrl.abort(), 9000);
         const genCfg = { temperature: 0.05, maxOutputTokens: 250 };
         if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
         try {
@@ -110,14 +64,14 @@ module.exports = async function handler(req, res) {
 
     // MODE 2: Chat & Full-App Automation
     const systemPrompt = [
-      'You are Viraasat AI — smart assistant and full-app automation engine for Viraasat (luxury Indian digital family heirloom app).',
+      'You are Viraasat AI — the smart assistant and full-app automation engine for Viraasat (a luxury Indian digital family heirloom app for family trees, photo walls, 3D e-invite cards, time capsules, voice stories, family lounge chat/calls, and live MCX gold/silver rates).',
       'Current Date: ' + (ctx.todayISO || new Date().toISOString().slice(0, 10)),
       'App State: ' + JSON.stringify(ctx),
       'RULES:',
       '1. ALWAYS call the matching tool(s) immediately whenever user asks to do, open, change, or asks how to do anything (profile photo/DP, cards, capsules, family tree, events, calls, markets, settings, dark mode, language, PIN lock, backup), AND explain in 2-3 short lines.',
       '2. Mirror the user language/dialect (Hinglish -> Hinglish, Haryanvi -> Roman Haryanvi, Punjabi -> Roman Punjabi, English -> English). Never use Devanagari unless user does.',
       '3. For profile picture/DP requests, ALWAYS call edit_member_profile.',
-      '4. Keep replies short, warm, and direct.'
+      '4. Keep replies short, natural, warm, and direct.'
     ].join('\n');
 
     const functionDeclarations = [
@@ -305,12 +259,13 @@ module.exports = async function handler(req, res) {
     if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
 
     let aiData = null;
+    let lastError = 'Gemini busy';
 
     for (const model of modelsToTry) {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 3800);
-      const genConfig = { temperature: 0.35, maxOutputTokens: 400 };
+      const timer = setTimeout(() => ctrl.abort(), 9000);
+      const genConfig = { temperature: 0.35, maxOutputTokens: 450 };
       if (model.includes('2.5')) genConfig.thinkingConfig = { thinkingBudget: 0 };
       try {
         const resp = await fetch(url, {
@@ -330,14 +285,18 @@ module.exports = async function handler(req, res) {
           aiData = json;
           break;
         }
+        lastError = (json && json.error && json.error.message) ? json.error.message : ('HTTP ' + resp.status);
       } catch (e) {
         clearTimeout(timer);
+        lastError = e && e.name === 'AbortError' ? 'Timeout' : (e && e.message ? e.message : 'Network error');
       }
     }
 
     if (!aiData) {
-      const lastUserMsg = [...userMessages].reverse().find(m => m && m.role === 'user');
-      return res.status(200).json(buildInstantFallback(lastUserMsg ? lastUserMsg.content : '', ctx));
+      return res.status(200).json({
+        reply: 'AI abhi thoda busy hai (' + lastError + '). Ek second baad dobara bhejo.',
+        actions: []
+      });
     }
 
     const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
@@ -358,8 +317,10 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({ reply, actions });
   } catch (err) {
-    const lastUserMsg = [...userMessages].reverse().find(m => m && m.role === 'user');
-    return res.status(200).json(buildInstantFallback(lastUserMsg ? lastUserMsg.content : '', ctx));
+    return res.status(200).json({
+      reply: 'Temporary error: ' + (err && err.message ? err.message : 'Unknown') + '. Dobara try karein.',
+      actions: []
+    });
   }
 };
-                       
+            
