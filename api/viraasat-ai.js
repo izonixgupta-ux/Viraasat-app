@@ -1,15 +1,81 @@
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_REQ = 20;          // Max 20 requests per minute per IP
+const ipHits = new Map();
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const list = (ipHits.get(ip) || []).filter(ts => now - ts < RATE_LIMIT_WINDOW_MS);
+  if (list.length >= RATE_LIMIT_MAX_REQ) {
+    ipHits.set(ip, list);
+    return false;
+  }
+  list.push(now);
+  ipHits.set(ip, list);
+  // Prevent unbounded memory growth
+  if (ipHits.size > 500) {
+    for (const [k, v] of ipHits.entries()) {
+      if (!v.length || now - v[v.length - 1] > RATE_LIMIT_WINDOW_MS) ipHits.delete(k);
+    }
+  }
+  return true;
+}
+
+function isOriginAllowed(req) {
+  const origin = String(req.headers.origin || '').trim();
+  const referer = String(req.headers.referer || '').trim();
+  const host = String(req.headers.host || '').trim().toLowerCase();
+  const customAllowed = String(process.env.ALLOWED_ORIGIN || '').trim().toLowerCase();
+
+  // Same-origin browser requests sometimes omit Origin on GET, but POST includes Origin or Referer
+  const source = origin || referer;
+  if (!source) return false;
+
+  try {
+    const parsed = new URL(source);
+    const srcHost = parsed.host.toLowerCase();
+    if (srcHost === host) return true;
+    if (customAllowed && (parsed.origin.toLowerCase() === customAllowed || srcHost === customAllowed)) return true;
+    if (srcHost.startsWith('localhost:') || srcHost === 'localhost' || srcHost === '127.0.0.1') return true;
+  } catch (e) {
+    return false;
+  }
+  return false;
+}
+
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = String(req.headers.origin || '').trim();
+  const allowed = isOriginAllowed(req);
+
+  if (allowed && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method === 'OPTIONS') return res.status(allowed ? 200 : 403).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  // 1. Domain Lock Check
+  if (!allowed) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  // 2. Per-IP Rate Limit Check
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
+    .split(',')[0]
+    .trim();
+  if (!checkRateLimit(clientIp)) {
+    return res.status(429).json({
+      reply: 'Thoda slow chalo! Ek minute baad dobara try karein.',
+      actions: []
+    });
+  }
 
   const apiKey = (process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
     return res.status(200).json({
-      reply: 'Vercel Environment Variables me API key set nahi hai. Please GEMINI_API_KEY (ya OPENROUTER_API_KEY) add karke redeploy karein.',
+      reply: 'AI service abhi configure ho rahi hai. Thodi der baad try karein.',
       actions: []
     });
   }
@@ -36,12 +102,18 @@ module.exports = async function handler(req, res) {
 
   try {
     body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    userMessages = Array.isArray(body.messages) ? body.messages.slice(-8) : [];
-    ctx = body.context || {};
+    // 3. Payload & Prompt Size Guard
+    userMessages = Array.isArray(body.messages)
+      ? body.messages.slice(-8).map(m => ({
+          role: m && m.role === 'assistant' ? 'assistant' : 'user',
+          content: String((m && m.content) || '').slice(0, 1200)
+        }))
+      : [];
+    ctx = body.context && typeof body.context === 'object' ? body.context : {};
 
     // MODE 1: Voice Transcription
     if (body.action === 'transcribe' && body.audioBase64) {
-      if (isOpenRouter) {
+      if (isOpenRouter || String(body.audioBase64).length > 3500000) {
         return res.status(200).json({ transcript: '' });
       }
       const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
@@ -80,7 +152,7 @@ module.exports = async function handler(req, res) {
     const systemPrompt = [
       'You are Viraasat AI — the smart assistant and full-app automation engine for Viraasat (a luxury Indian digital family heirloom app for family trees, photo walls, 3D e-invite cards, time capsules, voice stories, family lounge chat/calls, and live MCX gold/silver rates).',
       'Current Date: ' + (ctx.todayISO || new Date().toISOString().slice(0, 10)),
-      'App State: ' + JSON.stringify(ctx),
+      'App State: ' + JSON.stringify(ctx).slice(0, 2000),
       'RULES:',
       '1. ALWAYS call the matching tool(s) ONLY when the user asks to perform an action, open a screen, or change a setting. If the user asks a conversational question, answer normally in text WITHOUT calling any tool.',
       '2. For theme changes: "dark mode" / "dark theme" => update_app_settings({ dark: true }). "light mode" / "light theme" / "back to light" => update_app_settings({ dark: false }). Never mix them up.',
@@ -268,9 +340,7 @@ module.exports = async function handler(req, res) {
       }
     ];
 
-    // =========================================================================
     // PROVIDER A: OPENROUTER (sk-or-v1-...)
-    // =========================================================================
     if (isOpenRouter) {
       const customModel = (process.env.OPENROUTER_MODEL || process.env.GEMINI_MODEL || '').trim();
       const orModels = [
@@ -283,10 +353,7 @@ module.exports = async function handler(req, res) {
       const messages = [{ role: 'system', content: systemPrompt }];
       for (const m of userMessages) {
         if (m && m.content) {
-          messages.push({
-            role: m.role === 'assistant' ? 'assistant' : 'user',
-            content: String(m.content)
-          });
+          messages.push({ role: m.role, content: m.content });
         }
       }
       if (messages.length === 1) messages.push({ role: 'user', content: 'Hi' });
@@ -296,7 +363,6 @@ module.exports = async function handler(req, res) {
         function: { name: fn.name, description: fn.description, parameters: fn.parameters }
       }));
 
-      let lastErr = 'OpenRouter busy';
       for (const model of orModels) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 8500);
@@ -306,7 +372,7 @@ module.exports = async function handler(req, res) {
             headers: {
               'Content-Type': 'application/json',
               'Authorization': 'Bearer ' + apiKey,
-              'HTTP-Referer': 'https://viraasat.vercel.app',
+              'HTTP-Referer': origin || 'https://viraasat.vercel.app',
               'X-Title': 'Viraasat AI'
             },
             signal: ctrl.signal,
@@ -334,41 +400,31 @@ module.exports = async function handler(req, res) {
               }
             }
             let reply = String(msg.content || '').trim();
-            if (!reply && !actions.length) {
-              lastErr = 'Empty response';
-              continue;
-            }
-            if (!reply && actions.length) {
-              reply = smartActionReply(actions);
-            }
+            if (!reply && !actions.length) continue;
+            if (!reply && actions.length) reply = smartActionReply(actions);
             return res.status(200).json({ reply, actions });
           }
-          lastErr = (json && json.error && json.error.message) ? json.error.message : ('HTTP ' + resp.status);
         } catch (e) {
           clearTimeout(timer);
-          lastErr = e && e.name === 'AbortError' ? 'Timeout' : (e && e.message ? e.message : 'Network error');
         }
       }
       return res.status(200).json({
-        reply: 'AI abhi thoda busy hai (' + lastErr + '). Ek second baad dobara bhejo.',
+        reply: 'AI abhi thoda busy hai. Ek second baad dobara try karein.',
         actions: []
       });
     }
 
-    // =========================================================================
     // PROVIDER B: DIRECT GOOGLE GEMINI (AIza...)
-    // =========================================================================
     const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
     const modelsToTry = [preferredModel, 'gemini-3.8-flash', 'gemini-2.5-flash']
       .filter((v, i, a) => v && !v.includes('/') && a.indexOf(v) === i);
 
     const contents = userMessages
       .filter(m => m && m.content)
-      .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: String(m.content) }] }));
+      .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
     if (!contents.length) contents.push({ role: 'user', parts: [{ text: 'Hi' }] });
 
     let aiData = null;
-    let lastError = 'Gemini busy';
 
     for (const model of modelsToTry) {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
@@ -394,16 +450,14 @@ module.exports = async function handler(req, res) {
           aiData = json;
           break;
         }
-        lastError = (json && json.error && json.error.message) ? json.error.message : ('HTTP ' + resp.status);
       } catch (e) {
         clearTimeout(timer);
-        lastError = e && e.name === 'AbortError' ? 'Timeout' : (e && e.message ? e.message : 'Network error');
       }
     }
 
     if (!aiData) {
       return res.status(200).json({
-        reply: 'AI abhi thoda busy hai (' + lastError + '). Ek second baad dobara bhejo.',
+        reply: 'AI abhi thoda busy hai. Ek second baad dobara try karein.',
         actions: []
       });
     }
@@ -420,16 +474,14 @@ module.exports = async function handler(req, res) {
     }
 
     let reply = replyTexts.join('\n').trim();
-    if (!reply && actions.length) {
-      reply = smartActionReply(actions);
-    }
+    if (!reply && actions.length) reply = smartActionReply(actions);
 
     return res.status(200).json({ reply, actions });
   } catch (err) {
     return res.status(200).json({
-      reply: 'Temporary error: ' + (err && err.message ? err.message : 'Unknown') + '. Dobara try karein.',
+      reply: 'Temporary issue aa gaya. Ek baar dobara try karein.',
       actions: []
     });
   }
 };
-    
+                       
