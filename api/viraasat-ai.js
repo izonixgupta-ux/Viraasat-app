@@ -13,11 +13,69 @@ module.exports = async function handler(req, res) {
     });
   }
 
+  function buildInstantFallback(lastText, ctx) {
+    const q = String(lastText || '').toLowerCase().trim();
+    const m = (ctx && ctx.markets) || {};
+
+    if (/^(hi|hello|hey|namaste|hlo|yo|sup|helo)\b/.test(q) || q.includes('kaise ho') || q.includes('hello viraasat')) {
+      return {
+        reply: 'Namaste! Main Viraasat AI hoon — bilkul ready hoon. Bolo kya karna hai: wedding/birthday card design, time capsule lock, profile picture change, ya live gold rate check?',
+        actions: []
+      };
+    }
+    if (q.includes('feature') || q.includes('kya kar') || q.includes('kya kya')) {
+      return {
+        reply: 'Viraasat ke main features:\n• **Living Family Tree & Photo Wall** — poori family generations aur photos save karo\n• **3D E-Invite Card Studio** — animated wedding/birthday cards & videos banao\n• **Time Capsules** — future dates ke liye wishes lock karo\n• **Voice & Story Vault** — live dictation aur original voice memos record karo\n• **Family Lounge & Calls** — private family chat + audio/video call\n• **Live MCX Gold/Silver Rates** — real-time bullion rates & price alerts',
+        actions: []
+      };
+    }
+    if (q.includes('profile') || q.includes('dp') || q.includes('avatar') || q.includes('photo change')) {
+      return {
+        reply: 'Maine aapka Profile Editor khol diya hai — **Upload Photo** par tap karke apni photo crop aur save kar lo.',
+        actions: [{ name: 'edit_member_profile', args: {} }]
+      };
+    }
+    if (q.includes('gold') || q.includes('silver') || q.includes('rate') || q.includes('bhav') || q.includes('mcx')) {
+      const g24 = m.gold24_10g_inr ? `₹${Number(m.gold24_10g_inr).toLocaleString('en-IN')}/10g` : 'Live';
+      const sil = m.silver_1kg_inr ? `₹${Number(m.silver_1kg_inr).toLocaleString('en-IN')}/kg` : 'Live';
+      return {
+        reply: `Abhi Gold 24K **${g24}** aur Silver **${sil}** chal raha hai. Maine Markets tab khol diya hai.`,
+        actions: [{ name: 'manage_markets', args: { refresh: true } }]
+      };
+    }
+    if (q.includes('dark mode')) {
+      return {
+        reply: 'Dark Mode on kar diya hai!',
+        actions: [{ name: 'update_app_settings', args: { dark: true } }]
+      };
+    }
+    if (q.includes('light mode')) {
+      return {
+        reply: 'Light Mode on kar diya hai!',
+        actions: [{ name: 'update_app_settings', args: { dark: false } }]
+      };
+    }
+    if (q.includes('setting')) {
+      return {
+        reply: 'Settings open kar di hain — yahan se theme, language, glass UI aur PIN lock change kar sakte ho.',
+        actions: [{ name: 'navigate_app', args: { destination: 'settings' } }]
+      };
+    }
+    return {
+      reply: 'Abhi server par thoda load hai, par main ready hoon! Ek baar dobara short me bolo — jaise "Wedding card banao", "Profile photo change", ya "Live gold rate".',
+      actions: []
+    };
+  }
+
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').trim();
-    const modelsToTry = [preferredModel, 'gemini-2.5-flash', 'gemini-3.8-flash']
-      .filter((v, i, a) => a.indexOf(v) === i);
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+    const modelsToTry = [
+      preferredModel,
+      'gemini-3.8-flash',
+      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash'
+    ].filter((v, i, a) => v && a.indexOf(v) === i);
 
     // MODE 1: Smart Auto-Detect Voice Transcription
     if (body.action === 'transcribe' && body.audioBase64) {
@@ -35,29 +93,38 @@ RULES:
       let lastErr = 'Transcription failed';
       for (const model of modelsToTry) {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 5000);
         const genCfg = { temperature: 0.05, maxOutputTokens: 300 };
         if (model.includes('2.5')) genCfg.thinkingConfig = { thinkingBudget: 0 };
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              role: 'user',
-              parts: [
-                { text: transcribePrompt },
-                { inlineData: { mimeType, data: body.audioBase64 } }
-              ]
-            }],
-            generationConfig: genCfg
-          })
-        });
-        const json = await resp.json().catch(() => ({}));
-        const out = json && json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text;
-        if (resp.ok && out && out.trim()) {
-          transcript = out.trim().replace(/^["']|["']$/g, '');
-          break;
+        try {
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              contents: [{
+                role: 'user',
+                parts: [
+                  { text: transcribePrompt },
+                  { inlineData: { mimeType, data: body.audioBase64 } }
+                ]
+              }],
+              generationConfig: genCfg
+            })
+          });
+          clearTimeout(timer);
+          const json = await resp.json().catch(() => ({}));
+          const out = json && json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0] && json.candidates[0].content.parts[0].text;
+          if (resp.ok && out && out.trim()) {
+            transcript = out.trim().replace(/^["']|["']$/g, '');
+            break;
+          }
+          lastErr = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
+        } catch (e) {
+          clearTimeout(timer);
+          lastErr = e && e.name === 'AbortError' ? 'Voice timeout' : (e && e.message ? e.message : 'Network error');
         }
-        lastErr = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
       }
       if (!transcript) return res.status(502).json({ error: 'Voice AI Error: ' + lastErr });
       return res.status(200).json({ transcript });
@@ -324,7 +391,7 @@ CRITICAL RULES:
     for (const model of modelsToTry) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8500);
+      const timer = setTimeout(() => ctrl.abort(), 4500);
       const genConfig = { temperature: 0.35, maxOutputTokens: 450 };
       if (model.includes('2.5')) genConfig.thinkingConfig = { thinkingBudget: 0 };
       try {
@@ -348,35 +415,4 @@ CRITICAL RULES:
         lastError = (json && json.error && json.error.message) ? json.error.message : `HTTP ${resp.status}`;
       } catch (e) {
         clearTimeout(timer);
-        lastError = e && e.name === 'AbortError' ? 'AI response timeout' : (e && e.message ? e.message : 'Network error');
-      }
-    }
-
-    if (!aiData) {
-      return res.status(502).json({ error: 'Gemini Error: ' + lastError });
-    }
-
-    const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
-    const actions = [];
-    const replyTexts = [];
-
-    for (const part of parts) {
-      if (part.functionCall && part.functionCall.name) {
-        actions.push({ name: part.functionCall.name, args: part.functionCall.args || {} });
-      }
-      if (part.text) {
-        replyTexts.push(part.text);
-      }
-    }
-
-    let reply = replyTexts.join('\n').trim();
-    if (!reply && actions.length) {
-      reply = 'Done! Maine aapke liye exact screen khol di hai aur settings update kar di hain.';
-    }
-
-    return res.status(200).json({ reply, actions });
-  } catch (err) {
-    return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
-  }
-}
-  
+        lastError = e && e.name === 'AbortError' ? 'AI response timeout' : (e && e.message ?
