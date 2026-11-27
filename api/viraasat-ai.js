@@ -11,7 +11,6 @@ function checkRateLimit(ip) {
   }
   list.push(now);
   ipHits.set(ip, list);
-  // Prevent unbounded memory growth
   if (ipHits.size > 500) {
     for (const [k, v] of ipHits.entries()) {
       if (!v.length || now - v[v.length - 1] > RATE_LIMIT_WINDOW_MS) ipHits.delete(k);
@@ -26,7 +25,6 @@ function isOriginAllowed(req) {
   const host = String(req.headers.host || '').trim().toLowerCase();
   const customAllowed = String(process.env.ALLOWED_ORIGIN || '').trim().toLowerCase();
 
-  // Same-origin browser requests sometimes omit Origin on GET, but POST includes Origin or Referer
   const source = origin || referer;
   if (!source) return false;
 
@@ -56,12 +54,10 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(allowed ? 200 : 403).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // 1. Domain Lock Check
   if (!allowed) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  // 2. Per-IP Rate Limit Check
   const clientIp = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown')
     .split(',')[0]
     .trim();
@@ -102,7 +98,6 @@ module.exports = async function handler(req, res) {
 
   try {
     body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    // 3. Payload & Prompt Size Guard
     userMessages = Array.isArray(body.messages)
       ? body.messages.slice(-8).map(m => ({
           role: m && m.role === 'assistant' ? 'assistant' : 'user',
@@ -111,13 +106,53 @@ module.exports = async function handler(req, res) {
       : [];
     ctx = body.context && typeof body.context === 'object' ? body.context : {};
 
-    // MODE 1: Voice Transcription
+    // MODE 1: Smart Audio Transcription (Supports BOTH OpenRouter & Direct Gemini)
     if (body.action === 'transcribe' && body.audioBase64) {
-      if (isOpenRouter || String(body.audioBase64).length > 3500000) {
+      if (String(body.audioBase64).length > 3500000) {
         return res.status(200).json({ transcript: '' });
       }
       const mimeType = String(body.mimeType || 'audio/webm').split(';')[0];
-      const transcribePrompt = 'Transcribe this Indian English / Hinglish / Haryanvi / Punjabi / Urdu audio accurately in Roman script (Latin A-Z only). Return ONLY the transcribed text.';
+      const audioFmt = mimeType.includes('mp4') ? 'mp4' : (mimeType.includes('ogg') ? 'ogg' : (mimeType.includes('wav') ? 'wav' : 'webm'));
+      const transcribePrompt = 'Transcribe this Indian English / Hinglish / Haryanvi / Punjabi / Urdu voice command accurately in Roman script (Latin A-Z only). Preserve app terms like Viraasat, Gold, Silver, dark mode, light mode, wedding card, time capsule, profile picture. Return ONLY the transcribed text with no quotes.';
+
+      if (isOpenRouter) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
+        try {
+          const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + apiKey,
+              'HTTP-Referer': origin || 'https://viraasat.vercel.app',
+              'X-Title': 'Viraasat AI'
+            },
+            signal: ctrl.signal,
+            body: JSON.stringify({
+              model: 'google/gemini-2.5-flash',
+              messages: [{
+                role: 'user',
+                content: [
+                  { type: 'text', text: transcribePrompt },
+                  { type: 'input_audio', input_audio: { data: body.audioBase64, format: audioFmt } }
+                ]
+              }],
+              temperature: 0.05,
+              max_tokens: 250
+            })
+          });
+          clearTimeout(timer);
+          const json = await resp.json().catch(() => ({}));
+          const out = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+          if (resp.ok && out && String(out).trim()) {
+            return res.status(200).json({ transcript: String(out).trim().replace(/^["']|["']$/g, '') });
+          }
+        } catch (e) {
+          clearTimeout(timer);
+        }
+        return res.status(200).json({ transcript: '' });
+      }
+
       const gModels = ['gemini-3.8-flash', 'gemini-2.5-flash'];
       let transcript = '';
       for (const model of gModels) {
@@ -446,42 +481,4 @@ module.exports = async function handler(req, res) {
         });
         clearTimeout(timer);
         const json = await resp.json().catch(() => ({}));
-        if (resp.ok && json.candidates && json.candidates[0]) {
-          aiData = json;
-          break;
-        }
-      } catch (e) {
-        clearTimeout(timer);
-      }
-    }
-
-    if (!aiData) {
-      return res.status(200).json({
-        reply: 'AI abhi thoda busy hai. Ek second baad dobara try karein.',
-        actions: []
-      });
-    }
-
-    const parts = (aiData.candidates[0].content && aiData.candidates[0].content.parts) || [];
-    const actions = [];
-    const replyTexts = [];
-
-    for (const part of parts) {
-      if (part.functionCall && part.functionCall.name) {
-        actions.push({ name: part.functionCall.name, args: part.functionCall.args || {} });
-      }
-      if (part.text) replyTexts.push(part.text);
-    }
-
-    let reply = replyTexts.join('\n').trim();
-    if (!reply && actions.length) reply = smartActionReply(actions);
-
-    return res.status(200).json({ reply, actions });
-  } catch (err) {
-    return res.status(200).json({
-      reply: 'Temporary issue aa gaya. Ek baar dobara try karein.',
-      actions: []
-    });
-  }
-};
-                       
+        if (resp.ok && json.cand
