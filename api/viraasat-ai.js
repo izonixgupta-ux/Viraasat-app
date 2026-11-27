@@ -26,7 +26,7 @@ module.exports = async function handler(req, res) {
 Listen carefully to the audio and transcribe EXACTLY what the speaker said with 100% accurate spelling.
 RULES:
 1. Auto-detect English, Hinglish, Hindi, Haryanvi, Punjabi, or Urdu seamlessly — even if the speaker mixes languages in one sentence.
-2. Preserve exact app terms, names, and numbers accurately (e.g. "Viraasat", "Gold MCX", "Silver", "1 lakh 20 thousand", "100000", "dark mode", "time capsule", "wedding card", "Ex-GST", "Retail").
+2. Preserve exact app terms, names, and numbers accurately (e.g. "Viraasat", "Gold MCX", "Silver", "1 lakh 20 thousand", "100000", "dark mode", "time capsule", "wedding card", "Ex-GST", "Retail", "profile picture").
 3. Output clean natural English if spoken in English, or clean Romanized script (Latin A-Z letters) if spoken in Hindi/Hinglish/Haryanvi/Punjabi/Urdu. NEVER output Devanagari, Gurmukhi, or Arabic script.
 4. Fix stutters cleanly without changing the speaker's intent.
 5. Return ONLY the final transcribed text — no quotes, no prefixes, no commentary.`;
@@ -63,7 +63,7 @@ RULES:
       return res.status(200).json({ transcript });
     }
 
-    // MODE 2: Full-App Automation & Support Chat
+    // MODE 2: Full-App Universal Auto-Pilot & Guided Support
     const userMessages = Array.isArray(body.messages) ? body.messages.slice(-10) : [];
     const ctx = body.context || {};
 
@@ -71,14 +71,53 @@ RULES:
 Current Date: ${ctx.todayISO || new Date().toISOString().slice(0, 10)}.
 App Live State Snapshot: ${JSON.stringify(ctx)}.
 
-Your dual role:
-1. FULL AUTOMATION: Whenever the user asks you to create, design, lock, add, post, switch, or update anything in Viraasat (cards, time capsules, family members, events, broadcasts, lounge messages, voice stories, MCX alerts, theme/language/navigation), ALWAYS call the matching tool(s) immediately with clean, complete parameters. You can call multiple tools in one turn if needed.
-2. LANGUAGE MIRRORING: Reply warmly, naturally, and concisely in the EXACT same language/dialect and script the user used (Roman Haryanvi -> Roman Haryanvi, Roman Punjabi -> Roman Punjabi, Roman Urdu -> Roman Urdu, Hinglish -> Hinglish, English -> English). Never switch to Shuddh Hindi Devanagari unless the user explicitly writes in Devanagari. Never be preachy.
-3. SMART DEFAULTS: For wedding/birthday cards or time capsules, fill in tasteful, realistic Indian family details for any fields the user didn't specify so the result looks instantly polished.
-4. MARKETS: Use the live MCX Gold/Silver prices from the App Live State Snapshot above when answering rate questions.
-5. VOICE DICTATION AWARENESS: The user often speaks via live voice-to-text (Indian English / Hinglish / Haryanvi / Punjabi / Urdu). Intelligently understand minor phonetic or speech-recognition typos (like "virasat", "gold mcx", "1 lakh", "target price", "shaadi card", "dark mode") by intent and execute cleanly without pointing out typos.`;
+CRITICAL RULES:
+1. ALWAYS ACT + EXPLAIN TOGETHER:
+   - Whenever the user asks to do ANYTHING, asks "how to do X", or asks "where is X" (e.g., change profile picture/DP, upload family photo, start audio/video call, change font, change app icon, set PIN lock, lock app, switch dark/light mode, change accent color/glass UI, switch active profile, edit family name, backup/export data, design/share/download 3D card, seal time capsule, add member, create event, check gold rate, set price alert, open alerts, check subscription/pass, change status/presence, turn on edit mode), ALWAYS call the matching tool(s) immediately so the app opens that exact screen/modal or executes the change automatically, AND in your reply give short, clear 2-3 step instructions so they know how it works too!
+   - NEVER say "this feature is not available" for any feature listed in the tools below.
+2. LANGUAGE MIRRORING:
+   - Reply warmly, naturally, and concisely in the EXACT same language/dialect and script the user used (Hinglish -> Hinglish, Roman Haryanvi -> Roman Haryanvi, Roman Punjabi -> Roman Punjabi, Roman Urdu -> Roman Urdu, English -> English). Never switch to Devanagari unless the user writes in Devanagari.
+3. SMART DEFAULTS:
+   - For wedding/birthday cards or time capsules, fill tasteful Indian family details for unspecified fields.
+   - For profile picture / DP / avatar change requests, ALWAYS call \`edit_member_profile\` (pass \`memberName\` if they mention someone like Papa/Mom, or leave empty for their own profile) AND explain: "Maine aapka Profile Editor khol diya hai — 'Upload Photo' par tap karke apni photo crop aur save kar lo."
+4. MARKETS:
+   - Use the live MCX Gold/Silver rates from App Live State Snapshot when answering rate questions, and call \`manage_markets\` to open Markets tab if they ask to see/check/track rates.
+5. CONCISE & FAST:
+   - Keep replies crisp (2-4 short lines max unless user asks for a full feature list).`;
 
     const functionDeclarations = [
+      {
+        name: 'edit_member_profile',
+        description: 'Open the Profile & Photo Editor modal (with circular DP cropper, name, relation, quote) for the current user or any named family member. Use whenever user asks to change profile picture, DP, avatar, photo, bio, or edit a member.',
+        parameters: {
+          type: 'object',
+          properties: {
+            memberName: { type: 'string', description: 'Optional name or relation of member (e.g. "Papa", "Dadi"). Leave empty to edit the current active user profile.' }
+          }
+        }
+      },
+      {
+        name: 'switch_active_profile',
+        description: 'Switch the active user identity (Send As / Viewing As) to another family member, or open the Member Switcher modal.',
+        parameters: {
+          type: 'object',
+          properties: {
+            memberName: { type: 'string', description: 'Optional member name to switch directly. Leave empty to open switcher modal.' }
+          }
+        }
+      },
+      {
+        name: 'start_call',
+        description: 'Start an iOS-style family audio call, video call, or open the private P2P call room / call picker.',
+        parameters: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['audio', 'video', 'room'], description: 'Type of call to start or open' },
+            memberName: { type: 'string', description: 'Optional family member name to call directly' }
+          },
+          required: ['mode']
+        }
+      },
       {
         name: 'design_card',
         description: 'Design or customize an animated 3D e-invite card in the Card Designer and open it.',
@@ -229,24 +268,39 @@ Your dual role:
       },
       {
         name: 'update_app_settings',
-        description: 'Change app appearance, dark/light mode, accent color, glass UI level, or app language.',
+        description: 'Change app appearance, dark/light mode, accent color, glass UI level, app icon, app language, UI text size, edit mode, sound FX, presence status, or family vault name.',
         parameters: {
           type: 'object',
           properties: {
             dark: { type: 'boolean' },
             accentTheme: { type: 'string', enum: ['gold', 'emerald', 'rose', 'sapphire', 'amethyst', 'titanium'] },
             appLang: { type: 'string', enum: ['en', 'hi', 'har', 'pa'] },
-            glassLevel: { type: 'string', enum: ['standard', 'pro', 'liquid'] }
+            glassLevel: { type: 'string', enum: ['standard', 'pro', 'liquid'] },
+            appIcon: { type: 'string', enum: ['auto', 'day_gold', 'night_gold', 'classic', 'liquid_glass', 'liquid_purple'] },
+            uiScale: { type: 'string', enum: ['compact', 'standard', 'large'] },
+            editMode: { type: 'boolean' },
+            soundFx: { type: 'boolean' },
+            presence: { type: 'string', enum: ['online', 'celebrating', 'busy', 'away'] },
+            familyName: { type: 'string' }
           }
         }
       },
       {
         name: 'navigate_app',
-        description: 'Navigate to any tab or modal in Viraasat.',
+        description: 'Open ANY tab, sub-tab, studio, or modal in Viraasat automatically.',
         parameters: {
           type: 'object',
           properties: {
-            destination: { type: 'string', enum: ['tree', 'capsules', 'voice', 'chat', 'events', 'cards', 'markets', 'settings', 'backup', 'language', 'alerts'] }
+            destination: {
+              type: 'string',
+              enum: [
+                'tree', 'capsules', 'album', 'add_photo', 'voice', 'chat', 'events', 'cards', 'markets',
+                'settings', 'settings_appearance', 'settings_language', 'settings_features', 'settings_vault',
+                'font_studio', 'pin_lock', 'lock_now', 'backup', 'export_backup', 'language', 'alerts',
+                'family_edit', 'add_member_modal', 'new_capsule_modal', 'new_event_modal',
+                'card_share', 'card_video', 'card_download', 'paywall', 'profile_switcher'
+              ]
+            }
           },
           required: ['destination']
         }
@@ -317,11 +371,12 @@ Your dual role:
 
     let reply = replyTexts.join('\n').trim();
     if (!reply && actions.length) {
-      reply = 'Done! Maine aapke command ke according sab update kar diya hai. Neeche live preview dekh sakte hain.';
+      reply = 'Done! Maine aapke liye exact screen khol di hai aur settings update kar di hain.';
     }
 
     return res.status(200).json({ reply, actions });
   } catch (err) {
     return res.status(500).json({ error: 'Server error: ' + (err && err.message ? err.message : 'Unknown') });
   }
-                    }
+}
+  
