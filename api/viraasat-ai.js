@@ -16,6 +16,20 @@ module.exports = async function handler(req, res) {
 
   const isOpenRouter = apiKey.startsWith('sk-or-');
 
+  function smartActionReply(actions) {
+    if (!actions || !actions.length) return 'Bataiye, main aapki kaise help kar sakta hoon?';
+    const a = actions[0];
+    if (a.name === 'update_app_settings') {
+      if (a.args && a.args.dark === true) return 'Dark mode on kar diya hai!';
+      if (a.args && a.args.dark === false) return 'Light mode on kar diya hai!';
+      return 'Settings update kar di hain!';
+    }
+    if (a.name === 'edit_member_profile') return 'Profile Editor khol diya hai — yahan se photo ya details update kar lo.';
+    if (a.name === 'design_card') return 'Card design ready hai! Live preview dekh sakte ho.';
+    if (a.name === 'manage_markets') return 'Live MCX Gold/Silver Markets khol diya hai.';
+    return 'Done! Maine aapke liye update kar diya hai.';
+  }
+
   let body = {};
   let userMessages = [];
   let ctx = {};
@@ -68,10 +82,11 @@ module.exports = async function handler(req, res) {
       'Current Date: ' + (ctx.todayISO || new Date().toISOString().slice(0, 10)),
       'App State: ' + JSON.stringify(ctx),
       'RULES:',
-      '1. ALWAYS call the matching tool(s) immediately whenever user asks to do, open, change, or asks how to do anything (profile photo/DP, cards, capsules, family tree, events, calls, markets, settings, dark mode, language, PIN lock, backup), AND explain in 2-3 short lines.',
-      '2. Mirror the user language/dialect (Hinglish -> Hinglish, Haryanvi -> Roman Haryanvi, Punjabi -> Roman Punjabi, English -> English). Never use Devanagari unless user does.',
-      '3. For profile picture/DP requests, ALWAYS call edit_member_profile.',
-      '4. Keep replies short, natural, warm, and direct.'
+      '1. ALWAYS call the matching tool(s) ONLY when the user asks to perform an action, open a screen, or change a setting. If the user asks a conversational question, answer normally in text WITHOUT calling any tool.',
+      '2. For theme changes: "dark mode" / "dark theme" => update_app_settings({ dark: true }). "light mode" / "light theme" / "back to light" => update_app_settings({ dark: false }). Never mix them up.',
+      '3. Mirror the user language/dialect (Hinglish -> Hinglish, Haryanvi -> Roman Haryanvi, Punjabi -> Roman Punjabi, English -> English). Never use Devanagari unless user does.',
+      '4. For profile picture/DP requests, ALWAYS call edit_member_profile.',
+      '5. Always give a complete, natural, warm reply and never cut off mid-sentence.'
     ].join('\n');
 
     const functionDeclarations = [
@@ -214,11 +229,11 @@ module.exports = async function handler(req, res) {
       },
       {
         name: 'update_app_settings',
-        description: 'Change dark/light mode, accent color, glass UI, app icon, language, text size, edit mode, sound FX, presence, or family name.',
+        description: 'Change app settings. IMPORTANT: Set dark=true for dark mode/theme, and dark=false for light mode/theme.',
         parameters: {
           type: 'object',
           properties: {
-            dark: { type: 'boolean' },
+            dark: { type: 'boolean', description: 'true = Dark Mode/Theme ON, false = Light Mode/Theme ON' },
             accentTheme: { type: 'string', enum: ['gold', 'emerald', 'rose', 'sapphire', 'amethyst', 'titanium'] },
             appLang: { type: 'string', enum: ['en', 'hi', 'har', 'pa'] },
             glassLevel: { type: 'string', enum: ['standard', 'pro', 'liquid'] },
@@ -261,7 +276,6 @@ module.exports = async function handler(req, res) {
       const orModels = [
         customModel,
         'google/gemini-2.5-flash',
-        'google/gemini-2.0-flash-exp:free',
         'meta-llama/llama-3.3-70b-instruct:free',
         'openrouter/free'
       ].filter((v, i, a) => v && v.includes('/') && a.indexOf(v) === i);
@@ -285,7 +299,7 @@ module.exports = async function handler(req, res) {
       let lastErr = 'OpenRouter busy';
       for (const model of orModels) {
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 7500);
+        const timer = setTimeout(() => ctrl.abort(), 8500);
         try {
           const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -302,7 +316,7 @@ module.exports = async function handler(req, res) {
               tools,
               tool_choice: 'auto',
               temperature: 0.35,
-              max_tokens: 450
+              max_tokens: 1200
             })
           });
           clearTimeout(timer);
@@ -320,10 +334,14 @@ module.exports = async function handler(req, res) {
               }
             }
             let reply = String(msg.content || '').trim();
-            if (!reply && actions.length) {
-              reply = 'Done! Maine aapke liye exact screen khol di hai aur settings update kar di hain.';
+            if (!reply && !actions.length) {
+              lastErr = 'Empty response';
+              continue;
             }
-            return res.status(200).json({ reply: reply || 'Ho gaya!', actions });
+            if (!reply && actions.length) {
+              reply = smartActionReply(actions);
+            }
+            return res.status(200).json({ reply, actions });
           }
           lastErr = (json && json.error && json.error.message) ? json.error.message : ('HTTP ' + resp.status);
         } catch (e) {
@@ -356,7 +374,7 @@ module.exports = async function handler(req, res) {
       const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 8500);
-      const genConfig = { temperature: 0.35, maxOutputTokens: 450 };
+      const genConfig = { temperature: 0.35, maxOutputTokens: 1200 };
       if (model.includes('2.5')) genConfig.thinkingConfig = { thinkingBudget: 0 };
       try {
         const resp = await fetch(url, {
@@ -403,7 +421,7 @@ module.exports = async function handler(req, res) {
 
     let reply = replyTexts.join('\n').trim();
     if (!reply && actions.length) {
-      reply = 'Done! Maine aapke liye exact screen khol di hai aur settings update kar di hain.';
+      reply = smartActionReply(actions);
     }
 
     return res.status(200).json({ reply, actions });
@@ -414,4 +432,4 @@ module.exports = async function handler(req, res) {
     });
   }
 };
-      
+    
